@@ -83,17 +83,85 @@ std::string getInternalStoragePath(JNIEnv *env) {
   return getAbsolutePath(env, storage_dir);
 }
 
+// Toast 显示函数
+void showToast(JNIEnv* env, const std::string& message) {
+  if (!env) return;
+  
+  // 获取全局 Context
+  jobject context = getGlobalContext(env);
+  if (!context) {
+    LOGI("Failed to get context for Toast");
+    return;
+  }
+  
+  // 获取 Toast 类
+  jclass toastClass = env->FindClass("android/widget/Toast");
+  if (!toastClass) {
+    LOGI("Failed to find Toast class");
+    env->DeleteLocalRef(context);
+    return;
+  }
+  
+  jmethodID makeTextMethod = env->GetStaticMethodID(
+      toastClass, "makeText", 
+      "(Landroid/content/Context;Ljava/lang/CharSequence;I)Landroid/widget/Toast;"
+  );
+  
+  if (!makeTextMethod) {
+    LOGI("Failed to find makeText method");
+    env->DeleteLocalRef(toastClass);
+    env->DeleteLocalRef(context);
+    return;
+  }
+  
+  // 创建 Java 字符串
+  jstring jMessage = env->NewStringUTF(message.c_str());
+  
+  // 调用 makeText (LENGTH_LONG = 1)
+  jobject toast = env->CallStaticObjectMethod(
+      toastClass, makeTextMethod, context, jMessage, 1
+  );
+  
+  if (toast) {
+    // 调用 show
+    jmethodID showMethod = env->GetMethodID(toastClass, "show", "()V");
+    if (showMethod) {
+      env->CallVoidMethod(toast, showMethod);
+    }
+    env->DeleteLocalRef(toast);
+  }
+  
+  // 清理局部引用
+  env->DeleteLocalRef(jMessage);
+  env->DeleteLocalRef(toastClass);
+  env->DeleteLocalRef(context);
+}
+
 std::string GetModsFilesPath(JNIEnv *env) {
   jobject app_context = getGlobalContext(env);
   if (!app_context) {
+    showToast(env, "Failed to get app context");
+    LOGI("Failed to get app context");
     return "";
   }
+  
   auto package_name = getPackageName(env, app_context);
   for (auto &c : package_name)
     c = tolower(c);
-
-  return (fs::path(getInternalStoragePath(env)) / "Android" / "data" /
-          package_name / "mods");
+  
+  std::string path = (fs::path(getInternalStoragePath(env)) / "Android" / "data" /
+                      package_name / "mods");
+  
+  // 检查目录是否可访问
+  std::error_code ec;
+  if (!fs::exists(path, ec)) {
+    std::string msg = "Config dir not exist: " + path;
+    LOGI("%s", msg.c_str());
+    showToast(env, msg);
+  }
+  
+  env->DeleteLocalRef(app_context);
+  return path;
 }
 
 SKY_AUTO_STATIC_HOOK(
@@ -104,6 +172,10 @@ SKY_AUTO_STATIC_HOOK(
     int, void *_this, JavaVM *vm) {
 
   vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_4);
+  if (env) {
+    showToast(env, "ForceCloseOreUI initialized");
+    LOGI("Hook1 triggered, JNIEnv obtained");
+  }
   return origin(_this, vm);
 }
 
@@ -201,63 +273,113 @@ std::string getConfigDir() {
   std::string primary = "/sdcard/games";
   if (!primary.empty()) {
     primary += "/ForceCloseOreUI/";
-    if (testDirWritable(primary))
+    if (testDirWritable(primary)) {
+      if (env) showToast(env, "Using config dir: " + primary);
       return primary;
+    }
   }
-  if (!env)
+  
+  if (!env) {
+    LOGI("JNIEnv is null, cannot use Android/data path");
+    if (env) showToast(env, "JNIEnv is null, using fallback path");
     return primary;
+  }
+  
   std::string base = GetModsFilesPath(env);
   if (!base.empty()) {
     base += "/ForceCloseOreUI/";
-    if (testDirWritable(base))
+    if (testDirWritable(base)) {
+      if (env) showToast(env, "Using config dir: " + base);
       return base;
+    } else {
+      std::string msg = "Cannot write to: " + base + ", using fallback";
+      LOGI("%s", msg.c_str());
+      if (env) showToast(env, msg);
+    }
   }
+  
+  if (env) showToast(env, "Using fallback config dir: " + primary);
   return primary;
 #endif
 }
+
 nlohmann::json outputJson;
 std::string dirPath = "";
 std::string filePath = dirPath + "config.json";
 bool updated = false;
 
 void saveJson(const std::string &path, const nlohmann::json &j) {
-  std::filesystem::create_directories(
-      std::filesystem::path(path).parent_path());
-  FILE *f = std::fopen(path.c_str(), "w");
-  if (!f) {
-    throw std::runtime_error(path);
+  try {
+    std::filesystem::create_directories(
+        std::filesystem::path(path).parent_path());
+    FILE *f = std::fopen(path.c_str(), "w");
+    if (!f) {
+      std::string error = "Failed to open file for writing: " + path;
+      LOGI("%s", error.c_str());
+      if (env) showToast(env, error);
+      throw std::runtime_error(path);
+    }
+    std::string jsonStr = j.dump(4);
+    std::fwrite(jsonStr.data(), 1, jsonStr.size(), f);
+    std::fclose(f);
+    
+    LOGI("Config saved successfully to: %s", path.c_str());
+    if (env) showToast(env, "Config saved to: " + path);
+  } catch (const std::exception &e) {
+    std::string error = "Save config failed: " + std::string(e.what());
+    LOGI("%s", error.c_str());
+    if (env) showToast(env, error);
   }
-  std::string jsonStr = j.dump(4);
-  std::fwrite(jsonStr.data(), 1, jsonStr.size(), f);
-  std::fclose(f);
 }
 
 SKY_AUTO_STATIC_HOOK(Hook2, memory::HookPriority::Normal, OREUI_PATTERN, void,
                      void *a1, void *a2, void *a3, void *a4, void *a5, void *a6,
                      void *a7, void *a8, void *a9, OreUi &a10, void *a11) {
+  
+  if (env) {
+    showToast(env, "ForceCloseOreUI Hook2 triggered");
+  }
+  
   dirPath = getConfigDir();
   filePath = dirPath + "config.json";
 
   if (std::filesystem::exists(filePath)) {
-    std::ifstream inFile(filePath);
-    inFile >> outputJson;
-    inFile.close();
+    try {
+      std::ifstream inFile(filePath);
+      inFile >> outputJson;
+      inFile.close();
+      LOGI("Config loaded from: %s", filePath.c_str());
+      if (env) showToast(env, "Config loaded from: " + filePath);
+    } catch (const std::exception &e) {
+      LOGI("Failed to load config: %s", e.what());
+      if (env) showToast(env, "Failed to load config: " + std::string(e.what()));
+    }
+  } else {
+    std::string msg = "Config not found, creating default: " + filePath;
+    LOGI("%s", msg.c_str());
+    if (env) showToast(env, msg);
   }
 
+  int enabledCount = 0;
   for (auto &data : a10.mConfigs) {
 
     bool value = false;
     if (outputJson.contains(data.first) &&
         outputJson[data.first].is_boolean()) {
       value = outputJson[data.first];
+      if (value) enabledCount++;
     } else {
-
       outputJson[data.first] = false;
       updated = true;
     }
     data.second.mUnknown3 = [value]() { return value; };
     data.second.mUnknown4 = [value]() { return value; };
   }
+  
+  std::string summary = "Loaded " + std::to_string(a10.mConfigs.size()) + 
+                        " configs, " + std::to_string(enabledCount) + " enabled";
+  LOGI("%s", summary.c_str());
+  if (env) showToast(env, summary);
 
   if (updated || !std::filesystem::exists(filePath)) {
     saveJson(filePath, outputJson);
