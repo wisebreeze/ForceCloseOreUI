@@ -83,7 +83,7 @@ std::string getInternalStoragePath(JNIEnv *env) {
   return getAbsolutePath(env, storage_dir);
 }
 
-// Toast 显示函数
+// Toast 显示函数 (仅 Android)
 void showToast(JNIEnv* env, const std::string& message) {
   if (!env) return;
   
@@ -274,14 +274,18 @@ std::string getConfigDir() {
   if (!primary.empty()) {
     primary += "/ForceCloseOreUI/";
     if (testDirWritable(primary)) {
+#if __arm__ || __aarch64__
       if (env) showToast(env, "Using config dir: " + primary);
+#endif
       return primary;
     }
   }
   
   if (!env) {
+#if __arm__ || __aarch64__
     LOGI("JNIEnv is null, cannot use Android/data path");
     if (env) showToast(env, "JNIEnv is null, using fallback path");
+#endif
     return primary;
   }
   
@@ -289,16 +293,22 @@ std::string getConfigDir() {
   if (!base.empty()) {
     base += "/ForceCloseOreUI/";
     if (testDirWritable(base)) {
+#if __arm__ || __aarch64__
       if (env) showToast(env, "Using config dir: " + base);
+#endif
       return base;
     } else {
       std::string msg = "Cannot write to: " + base + ", using fallback";
+#if __arm__ || __aarch64__
       LOGI("%s", msg.c_str());
       if (env) showToast(env, msg);
+#endif
     }
   }
   
+#if __arm__ || __aarch64__
   if (env) showToast(env, "Using fallback config dir: " + primary);
+#endif
   return primary;
 #endif
 }
@@ -315,20 +325,26 @@ void saveJson(const std::string &path, const nlohmann::json &j) {
     FILE *f = std::fopen(path.c_str(), "w");
     if (!f) {
       std::string error = "Failed to open file for writing: " + path;
+#if __arm__ || __aarch64__
       LOGI("%s", error.c_str());
       if (env) showToast(env, error);
+#endif
       throw std::runtime_error(path);
     }
     std::string jsonStr = j.dump(4);
     std::fwrite(jsonStr.data(), 1, jsonStr.size(), f);
     std::fclose(f);
     
+#if __arm__ || __aarch64__
     LOGI("Config saved successfully to: %s", path.c_str());
     if (env) showToast(env, "Config saved to: " + path);
+#endif
   } catch (const std::exception &e) {
     std::string error = "Save config failed: " + std::string(e.what());
+#if __arm__ || __aarch64__
     LOGI("%s", error.c_str());
     if (env) showToast(env, error);
+#endif
   }
 }
 
@@ -336,9 +352,11 @@ SKY_AUTO_STATIC_HOOK(Hook2, memory::HookPriority::Normal, OREUI_PATTERN, void,
                      void *a1, void *a2, void *a3, void *a4, void *a5, void *a6,
                      void *a7, void *a8, void *a9, OreUi &a10, void *a11) {
   
+#if __arm__ || __aarch64__
   if (env) {
     showToast(env, "ForceCloseOreUI Hook2 triggered");
   }
+#endif
   
   dirPath = getConfigDir();
   filePath = dirPath + "config.json";
@@ -348,16 +366,22 @@ SKY_AUTO_STATIC_HOOK(Hook2, memory::HookPriority::Normal, OREUI_PATTERN, void,
       std::ifstream inFile(filePath);
       inFile >> outputJson;
       inFile.close();
+#if __arm__ || __aarch64__
       LOGI("Config loaded from: %s", filePath.c_str());
       if (env) showToast(env, "Config loaded from: " + filePath);
+#endif
     } catch (const std::exception &e) {
+#if __arm__ || __aarch64__
       LOGI("Failed to load config: %s", e.what());
       if (env) showToast(env, "Failed to load config: " + std::string(e.what()));
+#endif
     }
   } else {
+#if __arm__ || __aarch64__
     std::string msg = "Config not found, creating default: " + filePath;
     LOGI("%s", msg.c_str());
     if (env) showToast(env, msg);
+#endif
   }
 
   int enabledCount = 0;
@@ -376,10 +400,12 @@ SKY_AUTO_STATIC_HOOK(Hook2, memory::HookPriority::Normal, OREUI_PATTERN, void,
     data.second.mUnknown4 = [value]() { return value; };
   }
   
+#if __arm__ || __aarch64__
   std::string summary = "Loaded " + std::to_string(a10.mConfigs.size()) + 
                         " configs, " + std::to_string(enabledCount) + " enabled";
   LOGI("%s", summary.c_str());
   if (env) showToast(env, summary);
+#endif
 
   if (updated || !std::filesystem::exists(filePath)) {
     saveJson(filePath, outputJson);
