@@ -3,12 +3,30 @@ name: Build
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version increment type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      create_release:
+        description: 'Create release'
+        required: true
+        default: 'true'
+        type: boolean
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup xmake
         uses: xmake-io/github-action-setup-xmake@v1
@@ -28,6 +46,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup xmake
         uses: xmake-io/github-action-setup-xmake@v1
@@ -45,3 +65,132 @@ jobs:
         with:
           name: android
           path: build/android/arm64-v8a/release/*.so
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-android]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: windows_assets
+      
+      - name: Download Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android
+          path: android_assets
+      
+      - name: List downloaded files
+        run: |
+          echo "Windows assets:"
+          ls -la windows_assets/ || echo "No files"
+          echo "Android assets:"
+          ls -la android_assets/ || echo "No files"
+      
+      - name: Organize release files
+        run: |
+          mkdir -p release_assets
+          
+          # 复制 Windows DLL
+          find windows_assets -name "*.dll" -exec cp {} release_assets/ \;
+          
+          # 复制 Android SO
+          find android_assets -name "*.so" -exec cp {} release_assets/ \;
+          
+          echo "Release assets:"
+          ls -la release_assets/
+      
+      - name: Get current version
+        id: current_version
+        run: |
+          # 从已有的 tag 获取最新版本号
+          latest_tag=$(git tag -l "v*" | sort -V | tail -n 1)
+          if [ -z "$latest_tag" ]; then
+            echo "version=1.0.9" >> $GITHUB_OUTPUT
+          else
+            echo "version=${latest_tag#v}" >> $GITHUB_OUTPUT
+          fi
+          echo "latest_tag=$latest_tag" >> $GITHUB_OUTPUT
+      
+      - name: Bump version
+        id: bumped_version
+        run: |
+          current=${{ steps.current_version.outputs.version }}
+          type="${{ github.event.inputs.version_type }}"
+          
+          IFS='.' read -r major minor patch <<< "$current"
+          
+          case "$type" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
+          
+          new_version="$major.$minor.$patch"
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+          echo "new_tag=v$new_version" >> $GITHUB_OUTPUT
+      
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          prev_tag=${{ steps.current_version.outputs.latest_tag }}
+          if [ -z "$prev_tag" ]; then
+            commits_log=$(git log --oneline --pretty=format:"- %s" | head -30)
+          else
+            commits_log=$(git log --oneline "$prev_tag..HEAD" --pretty=format:"- %s")
+          fi
+          
+          if [ -z "$commits_log" ]; then
+            commits_log="- No new commits"
+          fi
+          
+          cat << 'EOF' > release_notes.md
+          ## Release Notes
+          
+          ### 📦 Downloads
+          
+          | Platform | Architecture | File |
+          |----------|-------------|------|
+          | Windows | x64 | *.dll |
+          | Android | arm64-v8a | *.so |
+          
+          ### 📝 Changes in this release
+          
+          EOF
+          
+          echo "$commits_log" >> release_notes.md
+          
+          echo "notes_file=release_notes.md" >> $GITHUB_OUTPUT
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.bumped_version.outputs.new_tag }}
+          name: "v${{ steps.bumped_version.outputs.new_version }}"
+          body_path: ${{ steps.release_notes.outputs.notes_file }}
+          files: release_assets/*
+          fail_on_unmatched_files: false
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
