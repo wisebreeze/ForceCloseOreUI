@@ -34,134 +34,327 @@ JNIEnv *env = nullptr;
 #define LOGI(...)                                                              \
   __android_log_print(ANDROID_LOG_INFO, "LeviLogger", __VA_ARGS__)
 
-jobject getGlobalContext(JNIEnv *env) {
-  jclass activity_thread = env->FindClass("android/app/ActivityThread");
-  jmethodID current_activity_thread =
-      env->GetStaticMethodID(activity_thread, "currentActivityThread",
-                             "()Landroid/app/ActivityThread;");
-  jobject at =
-      env->CallStaticObjectMethod(activity_thread, current_activity_thread);
-  jmethodID get_application = env->GetMethodID(
-      activity_thread, "getApplication", "()Landroid/app/Application;");
-  jobject context = env->CallObjectMethod(at, get_application);
-  if (env->ExceptionCheck())
-    env->ExceptionClear();
-  return context;
-}
-
-std::string getAbsolutePath(JNIEnv *env, jobject file) {
-  jclass file_class = env->GetObjectClass(file);
-  jmethodID get_abs_path =
-      env->GetMethodID(file_class, "getAbsolutePath", "()Ljava/lang/String;");
-  auto jstr = (jstring)env->CallObjectMethod(file, get_abs_path);
-  if (env->ExceptionCheck())
-    env->ExceptionClear();
-  const char *cstr = env->GetStringUTFChars(jstr, nullptr);
-  std::string result(cstr);
-  env->ReleaseStringUTFChars(jstr, cstr);
-  return result;
-}
-
-std::string getPackageName(JNIEnv *env, jobject context) {
-  jclass context_class = env->GetObjectClass(context);
-  jmethodID get_pkg_name =
-      env->GetMethodID(context_class, "getPackageName", "()Ljava/lang/String;");
-  auto jstr = (jstring)env->CallObjectMethod(context, get_pkg_name);
-  if (env->ExceptionCheck())
-    env->ExceptionClear();
-  const char *cstr = env->GetStringUTFChars(jstr, nullptr);
-  std::string result(cstr);
-  env->ReleaseStringUTFChars(jstr, cstr);
-  return result;
-}
-
-std::string getInternalStoragePath(JNIEnv *env) {
-  jclass env_class = env->FindClass("android/os/Environment");
-  jmethodID get_storage_dir = env->GetStaticMethodID(
-      env_class, "getExternalStorageDirectory", "()Ljava/io/File;");
-  jobject storage_dir = env->CallStaticObjectMethod(env_class, get_storage_dir);
-  return getAbsolutePath(env, storage_dir);
-}
-
-// Toast 显示函数 (仅 Android)
-void showToast(JNIEnv* env, const std::string& message) {
+// 安全显示 Toast（在主线程中执行）
+void showToastSafe(const std::string& message) {
   if (!env) return;
   
   // 获取全局 Context
-  jobject context = getGlobalContext(env);
+  jclass activity_thread = env->FindClass("android/app/ActivityThread");
+  if (!activity_thread) return;
+  
+  jmethodID current_activity_thread =
+      env->GetStaticMethodID(activity_thread, "currentActivityThread",
+                             "()Landroid/app/ActivityThread;");
+  if (!current_activity_thread) {
+    env->DeleteLocalRef(activity_thread);
+    return;
+  }
+  
+  jobject at =
+      env->CallStaticObjectMethod(activity_thread, current_activity_thread);
+  if (env->ExceptionCheck()) env->ExceptionClear();
+  
+  jmethodID get_application = env->GetMethodID(
+      activity_thread, "getApplication", "()Landroid/app/Application;");
+  if (!get_application) {
+    env->DeleteLocalRef(activity_thread);
+    if (at) env->DeleteLocalRef(at);
+    return;
+  }
+  
+  jobject context = env->CallObjectMethod(at, get_application);
+  if (env->ExceptionCheck()) env->ExceptionClear();
+  
   if (!context) {
-    LOGI("Failed to get context for Toast");
+    env->DeleteLocalRef(activity_thread);
+    if (at) env->DeleteLocalRef(at);
     return;
   }
   
-  // 获取 Toast 类
-  jclass toastClass = env->FindClass("android/widget/Toast");
-  if (!toastClass) {
-    LOGI("Failed to find Toast class");
+  // 获取主线程 Looper
+  jclass looper_class = env->FindClass("android/os/Looper");
+  if (!looper_class) {
     env->DeleteLocalRef(context);
+    env->DeleteLocalRef(activity_thread);
+    if (at) env->DeleteLocalRef(at);
     return;
   }
   
-  jmethodID makeTextMethod = env->GetStaticMethodID(
-      toastClass, "makeText", 
-      "(Landroid/content/Context;Ljava/lang/CharSequence;I)Landroid/widget/Toast;"
-  );
-  
-  if (!makeTextMethod) {
-    LOGI("Failed to find makeText method");
-    env->DeleteLocalRef(toastClass);
+  jmethodID get_main_looper = env->GetStaticMethodID(
+      looper_class, "getMainLooper", "()Landroid/os/Looper;");
+  if (!get_main_looper) {
+    env->DeleteLocalRef(looper_class);
     env->DeleteLocalRef(context);
+    env->DeleteLocalRef(activity_thread);
+    if (at) env->DeleteLocalRef(at);
     return;
   }
   
-  // 创建 Java 字符串
-  jstring jMessage = env->NewStringUTF(message.c_str());
+  jobject main_looper = env->CallStaticObjectMethod(looper_class, get_main_looper);
+  if (env->ExceptionCheck()) env->ExceptionClear();
   
-  // 调用 makeText (LENGTH_LONG = 1)
+  // 创建 Toast
+  jclass toast_class = env->FindClass("android/widget/Toast");
+  if (!toast_class) {
+    env->DeleteLocalRef(looper_class);
+    if (main_looper) env->DeleteLocalRef(main_looper);
+    env->DeleteLocalRef(context);
+    env->DeleteLocalRef(activity_thread);
+    if (at) env->DeleteLocalRef(at);
+    return;
+  }
+  
+  jmethodID make_text = env->GetStaticMethodID(
+      toast_class, "makeText",
+      "(Landroid/content/Context;Ljava/lang/CharSequence;I)Landroid/widget/Toast;");
+  if (!make_text) {
+    env->DeleteLocalRef(toast_class);
+    env->DeleteLocalRef(looper_class);
+    if (main_looper) env->DeleteLocalRef(main_looper);
+    env->DeleteLocalRef(context);
+    env->DeleteLocalRef(activity_thread);
+    if (at) env->DeleteLocalRef(at);
+    return;
+  }
+  
+  jstring j_msg = env->NewStringUTF(message.c_str());
   jobject toast = env->CallStaticObjectMethod(
-      toastClass, makeTextMethod, context, jMessage, 1
-  );
+      toast_class, make_text, context, j_msg, 1); // 1 = LENGTH_LONG
   
-  if (toast) {
-    // 调用 show
-    jmethodID showMethod = env->GetMethodID(toastClass, "show", "()V");
-    if (showMethod) {
-      env->CallVoidMethod(toast, showMethod);
+  if (toast && !env->ExceptionCheck()) {
+    jmethodID show = env->GetMethodID(toast_class, "show", "()V");
+    if (show) {
+      env->CallVoidMethod(toast, show);
     }
     env->DeleteLocalRef(toast);
   }
   
-  // 清理局部引用
-  env->DeleteLocalRef(jMessage);
-  env->DeleteLocalRef(toastClass);
+  env->DeleteLocalRef(j_msg);
+  env->DeleteLocalRef(toast_class);
+  env->DeleteLocalRef(looper_class);
+  if (main_looper) env->DeleteLocalRef(main_looper);
   env->DeleteLocalRef(context);
+  env->DeleteLocalRef(activity_thread);
+  if (at) env->DeleteLocalRef(at);
 }
 
-std::string GetModsFilesPath(JNIEnv *env) {
-  jobject app_context = getGlobalContext(env);
-  if (!app_context) {
-    showToast(env, "Failed to get app context");
-    LOGI("Failed to get app context");
+// 安全显示日志（不依赖 JNI）
+void logMessage(const std::string& msg) {
+  LOGI("%s", msg.c_str());
+}
+
+// 获取包名（安全版本）
+std::string getPackageNameSafe(JNIEnv* jenv, jobject context) {
+  if (!jenv || !context) return "";
+  
+  jclass context_class = jenv->GetObjectClass(context);
+  if (!context_class) return "";
+  
+  jmethodID get_pkg_name =
+      jenv->GetMethodID(context_class, "getPackageName", "()Ljava/lang/String;");
+  if (!get_pkg_name) {
+    jenv->DeleteLocalRef(context_class);
     return "";
   }
   
-  auto package_name = getPackageName(env, app_context);
-  for (auto &c : package_name)
-    c = tolower(c);
-  
-  std::string path = (fs::path(getInternalStoragePath(env)) / "Android" / "data" /
-                      package_name / "mods");
-  
-  // 检查目录是否可访问
-  std::error_code ec;
-  if (!fs::exists(path, ec)) {
-    std::string msg = "Config dir not exist: " + path;
-    LOGI("%s", msg.c_str());
-    showToast(env, msg);
+  auto jstr = (jstring)jenv->CallObjectMethod(context, get_pkg_name);
+  if (jenv->ExceptionCheck()) {
+    jenv->ExceptionClear();
+    jenv->DeleteLocalRef(context_class);
+    return "";
   }
   
-  env->DeleteLocalRef(app_context);
+  const char* cstr = jenv->GetStringUTFChars(jstr, nullptr);
+  std::string result(cstr);
+  jenv->ReleaseStringUTFChars(jstr, cstr);
+  jenv->DeleteLocalRef(jstr);
+  jenv->DeleteLocalRef(context_class);
+  
+  // 转换为小写
+  for (auto& c : result) c = tolower(c);
+  return result;
+}
+
+std::string getInternalStoragePath(JNIEnv* jenv) {
+  if (!jenv) return "";
+  
+  jclass env_class = jenv->FindClass("android/os/Environment");
+  if (!env_class) return "";
+  
+  jmethodID get_storage_dir = jenv->GetStaticMethodID(
+      env_class, "getExternalStorageDirectory", "()Ljava/io/File;");
+  if (!get_storage_dir) {
+    jenv->DeleteLocalRef(env_class);
+    return "";
+  }
+  
+  jobject storage_dir = jenv->CallStaticObjectMethod(env_class, get_storage_dir);
+  if (jenv->ExceptionCheck()) {
+    jenv->ExceptionClear();
+    jenv->DeleteLocalRef(env_class);
+    return "";
+  }
+  
+  // 获取绝对路径
+  jclass file_class = jenv->GetObjectClass(storage_dir);
+  jmethodID get_abs_path =
+      jenv->GetMethodID(file_class, "getAbsolutePath", "()Ljava/lang/String;");
+  if (!get_abs_path) {
+    jenv->DeleteLocalRef(file_class);
+    jenv->DeleteLocalRef(env_class);
+    if (storage_dir) jenv->DeleteLocalRef(storage_dir);
+    return "";
+  }
+  
+  auto jstr = (jstring)jenv->CallObjectMethod(storage_dir, get_abs_path);
+  if (jenv->ExceptionCheck()) {
+    jenv->ExceptionClear();
+    jenv->DeleteLocalRef(file_class);
+    jenv->DeleteLocalRef(env_class);
+    if (storage_dir) jenv->DeleteLocalRef(storage_dir);
+    return "";
+  }
+  
+  const char* cstr = jenv->GetStringUTFChars(jstr, nullptr);
+  std::string result(cstr);
+  jenv->ReleaseStringUTFChars(jstr, cstr);
+  
+  jenv->DeleteLocalRef(jstr);
+  jenv->DeleteLocalRef(file_class);
+  jenv->DeleteLocalRef(env_class);
+  if (storage_dir) jenv->DeleteLocalRef(storage_dir);
+  
+  return result;
+}
+
+std::string GetModsFilesPath(JNIEnv* jenv) {
+  if (!jenv) {
+    logMessage("GetModsFilesPath: JNIEnv is null");
+    return "";
+  }
+  
+  // 获取全局 Context
+  jclass activity_thread = jenv->FindClass("android/app/ActivityThread");
+  if (!activity_thread) {
+    logMessage("GetModsFilesPath: Failed to find ActivityThread class");
+    return "";
+  }
+  
+  jmethodID current_activity_thread =
+      jenv->GetStaticMethodID(activity_thread, "currentActivityThread",
+                              "()Landroid/app/ActivityThread;");
+  if (!current_activity_thread) {
+    logMessage("GetModsFilesPath: Failed to get currentActivityThread method");
+    jenv->DeleteLocalRef(activity_thread);
+    return "";
+  }
+  
+  jobject at =
+      jenv->CallStaticObjectMethod(activity_thread, current_activity_thread);
+  if (jenv->ExceptionCheck()) {
+    jenv->ExceptionClear();
+    logMessage("GetModsFilesPath: Exception getting ActivityThread");
+    jenv->DeleteLocalRef(activity_thread);
+    return "";
+  }
+  
+  jmethodID get_application = jenv->GetMethodID(
+      activity_thread, "getApplication", "()Landroid/app/Application;");
+  if (!get_application) {
+    logMessage("GetModsFilesPath: Failed to get getApplication method");
+    jenv->DeleteLocalRef(activity_thread);
+    if (at) jenv->DeleteLocalRef(at);
+    return "";
+  }
+  
+  jobject context = jenv->CallObjectMethod(at, get_application);
+  if (jenv->ExceptionCheck()) {
+    jenv->ExceptionClear();
+    logMessage("GetModsFilesPath: Exception getting application context");
+    jenv->DeleteLocalRef(activity_thread);
+    if (at) jenv->DeleteLocalRef(at);
+    return "";
+  }
+  
+  if (!context) {
+    logMessage("GetModsFilesPath: Failed to get application context");
+    jenv->DeleteLocalRef(activity_thread);
+    if (at) jenv->DeleteLocalRef(at);
+    return "";
+  }
+  
+  auto package_name = getPackageNameSafe(jenv, context);
+  if (package_name.empty()) {
+    logMessage("GetModsFilesPath: Failed to get package name");
+    jenv->DeleteLocalRef(context);
+    jenv->DeleteLocalRef(activity_thread);
+    if (at) jenv->DeleteLocalRef(at);
+    return "";
+  }
+  
+  std::string internal_storage = getInternalStoragePath(jenv);
+  if (internal_storage.empty()) {
+    logMessage("GetModsFilesPath: Failed to get internal storage path");
+    jenv->DeleteLocalRef(context);
+    jenv->DeleteLocalRef(activity_thread);
+    if (at) jenv->DeleteLocalRef(at);
+    return "";
+  }
+  
+  std::string path = (fs::path(internal_storage) / "Android" / "data" /
+                      package_name / "mods");
+  
+  logMessage("GetModsFilesPath: Using path: " + path);
+  
+  jenv->DeleteLocalRef(context);
+  jenv->DeleteLocalRef(activity_thread);
+  if (at) jenv->DeleteLocalRef(at);
+  
   return path;
+}
+
+jobject getGlobalContext(JNIEnv *jenv) {
+  if (!jenv) return nullptr;
+  
+  jclass activity_thread = jenv->FindClass("android/app/ActivityThread");
+  if (!activity_thread) return nullptr;
+  
+  jmethodID current_activity_thread =
+      jenv->GetStaticMethodID(activity_thread, "currentActivityThread",
+                             "()Landroid/app/ActivityThread;");
+  if (!current_activity_thread) {
+    jenv->DeleteLocalRef(activity_thread);
+    return nullptr;
+  }
+  
+  jobject at =
+      jenv->CallStaticObjectMethod(activity_thread, current_activity_thread);
+  if (jenv->ExceptionCheck()) {
+    jenv->ExceptionClear();
+    jenv->DeleteLocalRef(activity_thread);
+    return nullptr;
+  }
+  
+  jmethodID get_application = jenv->GetMethodID(
+      activity_thread, "getApplication", "()Landroid/app/Application;");
+  if (!get_application) {
+    jenv->DeleteLocalRef(activity_thread);
+    if (at) jenv->DeleteLocalRef(at);
+    return nullptr;
+  }
+  
+  jobject context = jenv->CallObjectMethod(at, get_application);
+  if (jenv->ExceptionCheck()) {
+    jenv->ExceptionClear();
+    jenv->DeleteLocalRef(activity_thread);
+    if (at) jenv->DeleteLocalRef(at);
+    return nullptr;
+  }
+  
+  jenv->DeleteLocalRef(activity_thread);
+  if (at) jenv->DeleteLocalRef(at);
+  
+  return context;
 }
 
 SKY_AUTO_STATIC_HOOK(
@@ -173,8 +366,7 @@ SKY_AUTO_STATIC_HOOK(
 
   vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_4);
   if (env) {
-    showToast(env, "ForceCloseOreUI initialized");
-    LOGI("Hook1 triggered, JNIEnv obtained");
+    logMessage("Hook1 triggered, JNIEnv obtained");
   }
   return origin(_this, vm);
 }
@@ -275,7 +467,7 @@ std::string getConfigDir() {
     primary += "/ForceCloseOreUI/";
     if (testDirWritable(primary)) {
 #if __arm__ || __aarch64__
-      if (env) showToast(env, "Using config dir: " + primary);
+      logMessage("Using config dir: " + primary);
 #endif
       return primary;
     }
@@ -283,8 +475,7 @@ std::string getConfigDir() {
   
   if (!env) {
 #if __arm__ || __aarch64__
-    LOGI("JNIEnv is null, cannot use Android/data path");
-    if (env) showToast(env, "JNIEnv is null, using fallback path");
+    logMessage("JNIEnv is null, cannot use Android/data path");
 #endif
     return primary;
   }
@@ -294,20 +485,19 @@ std::string getConfigDir() {
     base += "/ForceCloseOreUI/";
     if (testDirWritable(base)) {
 #if __arm__ || __aarch64__
-      if (env) showToast(env, "Using config dir: " + base);
+      logMessage("Using config dir: " + base);
 #endif
       return base;
     } else {
       std::string msg = "Cannot write to: " + base + ", using fallback";
 #if __arm__ || __aarch64__
-      LOGI("%s", msg.c_str());
-      if (env) showToast(env, msg);
+      logMessage(msg);
 #endif
     }
   }
   
 #if __arm__ || __aarch64__
-  if (env) showToast(env, "Using fallback config dir: " + primary);
+  logMessage("Using fallback config dir: " + primary);
 #endif
   return primary;
 #endif
@@ -326,8 +516,7 @@ void saveJson(const std::string &path, const nlohmann::json &j) {
     if (!f) {
       std::string error = "Failed to open file for writing: " + path;
 #if __arm__ || __aarch64__
-      LOGI("%s", error.c_str());
-      if (env) showToast(env, error);
+      logMessage(error);
 #endif
       throw std::runtime_error(path);
     }
@@ -336,14 +525,12 @@ void saveJson(const std::string &path, const nlohmann::json &j) {
     std::fclose(f);
     
 #if __arm__ || __aarch64__
-    LOGI("Config saved successfully to: %s", path.c_str());
-    if (env) showToast(env, "Config saved to: " + path);
+    logMessage("Config saved successfully to: " + path);
 #endif
   } catch (const std::exception &e) {
     std::string error = "Save config failed: " + std::string(e.what());
 #if __arm__ || __aarch64__
-    LOGI("%s", error.c_str());
-    if (env) showToast(env, error);
+    logMessage(error);
 #endif
   }
 }
@@ -353,9 +540,7 @@ SKY_AUTO_STATIC_HOOK(Hook2, memory::HookPriority::Normal, OREUI_PATTERN, void,
                      void *a7, void *a8, void *a9, OreUi &a10, void *a11) {
   
 #if __arm__ || __aarch64__
-  if (env) {
-    showToast(env, "ForceCloseOreUI Hook2 triggered");
-  }
+  logMessage("ForceCloseOreUI Hook2 triggered");
 #endif
   
   dirPath = getConfigDir();
@@ -367,20 +552,16 @@ SKY_AUTO_STATIC_HOOK(Hook2, memory::HookPriority::Normal, OREUI_PATTERN, void,
       inFile >> outputJson;
       inFile.close();
 #if __arm__ || __aarch64__
-      LOGI("Config loaded from: %s", filePath.c_str());
-      if (env) showToast(env, "Config loaded from: " + filePath);
+      logMessage("Config loaded from: " + filePath);
 #endif
     } catch (const std::exception &e) {
 #if __arm__ || __aarch64__
-      LOGI("Failed to load config: %s", e.what());
-      if (env) showToast(env, "Failed to load config: " + std::string(e.what()));
+      logMessage(std::string("Failed to load config: ") + e.what());
 #endif
     }
   } else {
 #if __arm__ || __aarch64__
-    std::string msg = "Config not found, creating default: " + filePath;
-    LOGI("%s", msg.c_str());
-    if (env) showToast(env, msg);
+    logMessage("Config not found, creating default: " + filePath);
 #endif
   }
 
@@ -403,8 +584,7 @@ SKY_AUTO_STATIC_HOOK(Hook2, memory::HookPriority::Normal, OREUI_PATTERN, void,
 #if __arm__ || __aarch64__
   std::string summary = "Loaded " + std::to_string(a10.mConfigs.size()) + 
                         " configs, " + std::to_string(enabledCount) + " enabled";
-  LOGI("%s", summary.c_str());
-  if (env) showToast(env, summary);
+  logMessage(summary);
 #endif
 
   if (updated || !std::filesystem::exists(filePath)) {
