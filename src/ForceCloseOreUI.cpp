@@ -16,19 +16,15 @@
 #include <vector>
 
 namespace fs = std::filesystem;
+
 #if _WIN32
-
 #include <shlobj.h>
-#include <string>
-#include <vector>
 #include <windows.h>
-
 #endif
 
 #if __arm__
 #include <unistd.h>
 extern "C" int __wrap_getpagesize() { return sysconf(_SC_PAGESIZE); }
-
 #endif
 
 #if __arm__ || __aarch64__
@@ -38,10 +34,8 @@ extern "C" int __wrap_getpagesize() { return sysconf(_SC_PAGESIZE); }
 JNIEnv *env = nullptr;
 JavaVM *javaVm = nullptr;
 
-#define LOGI(...)                                                              \
-  __android_log_print(ANDROID_LOG_INFO, "LeviLogger", __VA_ARGS__)
-#define LOGE(...)                                                              \
-  __android_log_print(ANDROID_LOG_ERROR, "LeviLogger", __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "LeviLogger", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "LeviLogger", __VA_ARGS__)
 
 namespace {
 
@@ -265,24 +259,33 @@ public:
 #elif __aarch64__
 #define OREUI_PATTERN                                                                     \
      std::initializer_list<const char *>({                                                \
+      /* 1.26.20 (SUB + 6×STP + ADD X29 + MRS X9 + MOV W27,W3 + MOV W24,W2) */          \
       "? ? ? D1 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? D5 FB 03 03 2A F8 03 02 2A", \
-  })                                                                                                                    \
+      /* 1.26.10 (6×STP + MOV X29 + MRS X25 + MOV X26,X0 + MOV X21,X7) */               \
+      "? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 FD 03 00 91 ? ? ? D1 ? ? ? D5 FA 03 00 AA F5 03 07 AA", \
+      /* 1.26.0 (6×STP + MOV X29 + MRS X25 + MOV X27,X0 + MOV X21,X7) */                \
+      "? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 FD 03 00 91 ? ? ? D1 ? ? ? D5 FB 03 00 AA F5 03 07 AA", \
+      /* 旧版 (SUB + 6×STP + ADD X29 + MRS X8 + STR + MOV X27,X0 + MOV X21,X7) */   \
+      "? ? ? D1 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? F9 ? ? ? D5 FB 03 00 AA ? ? ? F9 F5 03 07 AA", \
+      /* 旧版 (6×STP + MOV X29 + MRS X25 + MOV X26,X0 + MOV X22,X7) */              \
+      "? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 FD 03 00 91 ? ? ? D1 ? ? ? D5 FA 03 00 AA F6 03 07 AA" \
+  })
 
 #elif _WIN32
-
-#include <shlobj.h>
-#include <string>
-#include <vector>
-#include <windows.h>
-
-
 #define OREUI_PATTERN                                                                                                    \
      std::initializer_list<const char *>({                                                                               \
-    "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC D8 01 00 00 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 45 89 CE", \
-  })                                                                                                 \
-
- #endif
-
+    /* 1.26.20 (x64) */                                                                                         \
+    "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC D8 01 00 00 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 45 89 CE",   \
+    /* 1.26.10 (x64) */                                                                                                \
+    "40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 68 48 8B 05 ? ? ? ? 48 33 C4 48 89 44 24 ? 49 8B E9 4C 89 44 24 ? 4C 8B EA 48 8B F9 48 89 4C 24", \
+    /* 1.26.0 (x64) */                                                                                                \
+    "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 ? ? ? ? 48 81 EC 18 02 00 00 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 ? ? ? ? 49 8B F1 4C 89 44 24", \
+    /* 旧版 (x64) */                                                                                                \
+    "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 ? ? ? ? 48 81 EC B8 01 00 00 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 ? ? ? ? 49 8B F1 4C 89 44 24", \
+    /* 旧版 (x64) */                                                                                                \
+    "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 ? ? ? ? 48 81 EC 98 01 00 00 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 ? ? ? ? 4D 8B F1 4C 89 44 24" \
+  })
+#endif
 // clang-format on
 
 namespace {
@@ -293,22 +296,17 @@ constexpr char kConfigFileName[] = "config.json";
 constexpr char kModDirName[] = "ForceCloseOreUI";
 
 #if defined(_WIN32)
-
 std::string getMinecraftModsPath() {
   char appDataPath[MAX_PATH];
   if (FAILED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
     printf("Failed to get APPDATA path.\n");
     return "";
   }
-
-  std::string path = std::string(appDataPath) + "\\Minecraft Bedrock\\mods";
-  return path;
+  return std::string(appDataPath) + "\\Minecraft Bedrock\\mods";
 }
 
 std::string getUWPModsDir() {
-  std::string appDataPath = getMinecraftModsPath();
-  std::string uwpMods = appDataPath + "\\ForceCloseOreUI\\";
-  return uwpMods;
+  return getMinecraftModsPath() + "\\ForceCloseOreUI\\";
 }
 #endif
 
@@ -339,7 +337,6 @@ std::string normalizedPathText(const fs::path &path) {
 void appendUniquePath(std::vector<fs::path> &paths, fs::path path) {
   if (path.empty())
     return;
-
   const std::string normalized = normalizedPathText(path);
   auto duplicated =
       std::any_of(paths.begin(), paths.end(), [&](const fs::path &item) {
@@ -357,17 +354,14 @@ bool pathExists(const fs::path &path) {
 bool isDirectoryWritable(const fs::path &dir) {
   if (dir.empty())
     return false;
-
   std::error_code ec;
   fs::create_directories(dir, ec);
   if (ec)
     return false;
-
   const fs::path test_file = dir / "._perm_test";
   std::ofstream ofs(test_file, std::ios::binary | std::ios::trunc);
   if (!ofs.is_open())
     return false;
-
   ofs.close();
   fs::remove(test_file, ec);
   return true;
@@ -398,7 +392,6 @@ fs::path selectWritableConfigDir(const std::vector<fs::path> &candidates) {
     if (isDirectoryWritable(dir))
       return dir;
   }
-
   if (!candidates.empty())
     return candidates.front();
   return fs::path("mods") / kModDirName;
@@ -471,7 +464,6 @@ std::optional<bool> readBoolLike(const Json &value) {
         if (auto parsed = readBoolLike(*it))
           return parsed;
       }
-
       auto disabled = value.find("disabled");
       if (disabled != value.end()) {
         if (auto parsed = readBoolLike(*disabled))
@@ -480,7 +472,6 @@ std::optional<bool> readBoolLike(const Json &value) {
     }
   } catch (...) {
   }
-
   return std::nullopt;
 }
 
@@ -492,13 +483,11 @@ std::optional<bool> readNamedConfigValue(const Json &root,
       if (auto parsed = readBoolLike(*direct))
         return parsed;
     }
-
     for (std::string_view key :
          {"configs", "settings", "toggles", "values", "oreui", "OreUI"}) {
       auto section = root.find(std::string(key));
       if (section == root.end() || !section->is_object())
         continue;
-
       auto nested = section->find(name);
       if (nested != section->end()) {
         if (auto parsed = readBoolLike(*nested))
@@ -506,12 +495,10 @@ std::optional<bool> readNamedConfigValue(const Json &root,
       }
     }
   }
-
   if (root.is_array()) {
     for (const Json &item : root) {
       if (!item.is_object())
         continue;
-
       bool name_matched = false;
       for (std::string_view key : {"name", "key", "id"}) {
         auto name_node = item.find(std::string(key));
@@ -521,14 +508,12 @@ std::optional<bool> readNamedConfigValue(const Json &root,
           break;
         }
       }
-
       if (name_matched) {
         if (auto parsed = readBoolLike(item))
           return parsed;
       }
     }
   }
-
   return std::nullopt;
 }
 
