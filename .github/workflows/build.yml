@@ -1,33 +1,31 @@
 name: Build
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      bump_version:
+        description: 'Version bump type'
+        required: false
+        type: choice
+        default: 'none'
+        options:
+          - none
+          - patch
+          - minor
+          - major
+      publish_release:
+        description: 'Publish GitHub Release?'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup xmake
-        uses: xmake-io/github-action-setup-xmake@v1
-
-      - name: Build for Windows (DLL)
-        run: |
-          xmake f -p windows -m release -v -y
-          xmake
-
-      - name: Upload DLL
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows
-          path: build/windows/x64/release/*.dll
-
   build-android:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup xmake
         uses: xmake-io/github-action-setup-xmake@v1
@@ -45,3 +43,159 @@ jobs:
         with:
           name: android
           path: build/android/arm64-v8a/release/*.so
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      - name: Build for Windows (DLL)
+        run: |
+          xmake f -p windows -m release -v -y
+          xmake
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: build/windows/x64/release/*.dll
+
+  bump-version:
+    needs: [build-android, build-windows]
+    if: github.event_name == 'workflow_dispatch' && inputs.bump_version != 'none'
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.get_version.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine version bump
+        id: get_version
+        run: |
+          # 获取最新的 tag
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+          echo "Current latest tag: $LATEST_TAG"
+
+          # 解析版本号
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          BUMP="${{ inputs.bump_version }}"
+          case "$BUMP" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "New tag: $NEW_TAG"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "New version: $MAJOR.$MINOR.$PATCH"
+
+      - name: Push new tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.get_version.outputs.new_tag }}
+          git push origin ${{ steps.get_version.outputs.new_tag }}
+
+  publish-release:
+    needs: [build-android, build-windows, bump-version]
+    if: |
+      always() &&
+      needs.build-android.result == 'success' &&
+      needs.build-windows.result == 'success' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish_release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android
+          path: artifacts/android
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: artifacts/windows
+
+      - name: Determine tag for release
+        id: release_tag
+        run: |
+          if [ "${{ inputs.bump_version }}" != "none" ]; then
+            TAG="${{ needs.bump-version.outputs.new_tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Generate Release Notes
+        run: |
+          # 获取上一个 tag 到现在的 commit 记录
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          echo "## 📦 Downloads" > release_notes.md
+          echo "" >> release_notes.md
+          echo "| Platform | Architecture | File |" >> release_notes.md
+          echo "|----------|-------------|------|" >> release_notes.md
+
+          # Android
+          ANDROID_FILE=$(ls artifacts/android/*.so 2>/dev/null | head -1)
+          if [ -n "$ANDROID_FILE" ]; then
+            ANDROID_FILENAME=$(basename "$ANDROID_FILE")
+            echo "| Android | arm64-v8a | \`$ANDROID_FILENAME\` |" >> release_notes.md
+          fi
+
+          # Windows
+          WINDOWS_FILE=$(ls artifacts/windows/*.dll 2>/dev/null | head -1)
+          if [ -n "$WINDOWS_FILE" ]; then
+            WINDOWS_FILENAME=$(basename "$WINDOWS_FILE")
+            echo "| Windows | x64 | \`$WINDOWS_FILENAME\` |" >> release_notes.md
+          fi
+
+          echo "" >> release_notes.md
+          echo "## 📝 Changes in this release" >> release_notes.md
+          echo "" >> release_notes.md
+
+          # 获取 commit 历史
+          if [ -n "$LATEST_TAG" ]; then
+            git log ${LATEST_TAG}..HEAD --oneline --no-merges >> release_notes.md
+          else
+            git log --oneline --no-merges >> release_notes.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          body_path: release_notes.md
+          files: |
+            artifacts/android/*.so
+            artifacts/windows/*.dll
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
