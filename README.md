@@ -6,6 +6,8 @@
 
 A handy utility to force close the Minecraft OreUI.
 
+This repository is a fork of [QYCottage/ForceCloseOreUI](https://github.com/QYCottage/ForceCloseOreUI)
+
 ---
 
 ## How to Use
