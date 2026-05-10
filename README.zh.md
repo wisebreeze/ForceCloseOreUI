@@ -6,6 +6,8 @@
 
 强制关闭 Minecraft OreUI 的工具。
 
+本仓库从 [QYCottage/ForceCloseOreUI](https://github.com/QYCottage/ForceCloseOreUI) 复刻
+
 ---
 
 ## 如何使用
