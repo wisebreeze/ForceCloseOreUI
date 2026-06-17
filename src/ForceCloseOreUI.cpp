@@ -259,6 +259,8 @@ public:
 #elif __aarch64__
 #define OREUI_PATTERN                                                                     \
      std::initializer_list<const char *>({                                                \
+      /* 1.26.30 */          \
+      "FF ?? ?? D1 FD 7B ?? A9 FC 6F ?? A9 FA 67 ?? A9 F8 5F ?? A9 F6 57 ?? A9 F4 4F ?? A9 FD ?? ?? 91 ?? D0 3B D5 ?? 03 05 AA ?? 03 03 2A", \
       /* 1.26.20 (SUB + 6×STP + ADD X29 + MRS X9 + MOV W27,W3 + MOV W24,W2) */          \
       "? ? ? D1 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? D5 FB 03 03 2A F8 03 02 2A", \
       /* 1.26.10 (6×STP + MOV X29 + MRS X25 + MOV X26,X0 + MOV X21,X7) */               \
